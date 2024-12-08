@@ -4,6 +4,7 @@ import MLX
 import MLXNN
 import MLXRandom
 import Vocos
+import AVFoundation
 
 // MARK: - F5TTS
 
@@ -13,6 +14,8 @@ public class F5TTS: Module {
         case unableToLoadReferenceAudio
         case unableToDetermineDuration
     }
+
+    static let targetRMS: Float = 0.1
 
     public let melSpec: MelSpec
     public let transformer: DiT
@@ -251,26 +254,33 @@ public class F5TTS: Module {
 // MARK: - Pretrained Models
 
 public extension F5TTS {
-    static func fromPretrained(repoId: String, downloadProgress: ((Progress) -> Void)? = nil) async throws -> F5TTS {
+    static func fromPretrained(repoId: String, bit: Int? = nil, downloadProgress: ((Progress) -> Void)? = nil) async throws -> F5TTS {
+        // Determine bit width from model name if not explicitly provided
+        var resolvedBit = bit
+        if resolvedBit == nil {
+            if repoId.contains("8bit") {
+                print("Loading model with 8bit quantization")
+                resolvedBit = 8
+            } else if repoId.contains("4bit") {
+                print("Loading model with 4bit quantization")
+                resolvedBit = 4
+            }
+        }
+        
         let modelDirectoryURL = try await Hub.snapshot(from: repoId, matching: ["*.safetensors", "*.txt"]) { progress in
             downloadProgress?(progress)
         }
-        return try self.fromPretrained(modelDirectoryURL: modelDirectoryURL)
-    }
-
-    static func fromPretrained(modelDirectoryURL: URL) throws -> F5TTS {
+        
         let modelURL = modelDirectoryURL.appendingPathComponent("model.safetensors")
         let modelWeights = try loadArrays(url: modelURL)
 
         // mel spec
-
         guard let filterbankURL = Bundle.module.url(forResource: "mel_filters", withExtension: "npy") else {
             throw F5TTSError.unableToLoadModel
         }
         let filterbank = try MLX.loadArray(url: filterbankURL)
 
         // vocab
-
         let vocabURL = modelDirectoryURL.appendingPathComponent("vocab.txt")
         guard let vocabString = try String(data: Data(contentsOf: vocabURL), encoding: .utf8) else {
             throw F5TTSError.unableToLoadModel
@@ -280,7 +290,6 @@ public extension F5TTS {
         let vocab = Dictionary(uniqueKeysWithValues: zip(vocabEntries, vocabEntries.indices))
 
         // duration model
-
         var durationPredictor: DurationPredictor?
         let durationModelURL = modelDirectoryURL.appendingPathComponent("duration_v2.safetensors")
         do {
@@ -302,14 +311,13 @@ public extension F5TTS {
                 vocabCharMap: vocab
             )
             try predictor.update(parameters: ModuleParameters.unflattened(durationModelWeights), verify: [.all])
-
             durationPredictor = predictor
+          
         } catch {
             print("Warning: no duration predictor model found: \(error)")
         }
 
         // model
-
         let dit = DiT(
             dim: 1024,
             depth: 22,
@@ -325,57 +333,37 @@ public extension F5TTS {
             vocabCharMap: vocab,
             durationPredictor: durationPredictor
         )
-        try f5tts.update(parameters: ModuleParameters.unflattened(modelWeights), verify: [.all])
-
-        return f5tts
-    }
-
-    /// Quantize the linear layers in the model.
-    /// - Parameters:
-    ///   - model: The model to quantize
-    ///   - bits: Number of bits for quantization (4 or 8)
-    ///   - predicate: Optional predicate to determine which linear layers to quantize
-    static func quantize(model: Module, bits: Int, predicate: ((Module) -> Bool)? = nil) {
-        let defaultPredicate: (Module) -> Bool = { module in
-            if let linear = module as? Linear {
-                return linear.weight.shape[1] % 64 == 0
-            }
-            return false
-        }
         
-        let actualPredicate = predicate ?? defaultPredicate
-        
-        model.visit { _, module in
-            if actualPredicate(module) {
-                if let linear = module as? Linear {
-                    // Quantize the weights
-                    let weight = linear.weight
-                    let quantizedWeight = MLX.quantize(weight, bits: bits)
-                    linear.weight.update(quantizedWeight)
-                    
-                    // Quantize bias if present
-                    if let bias = linear.bias {
-                        let quantizedBias = MLX.quantize(bias, bits: bits)
-                        linear.bias?.update(quantizedBias)
-                    }
-                }
-            }
-        }
-    }
-
-    public static func fromPretrained(modelDirectoryURL: URL, bit: Int? = nil) throws -> F5TTS {
-        let f5tts = try self.fromPretrained(modelDirectoryURL: modelDirectoryURL)
-
-        // Add quantization if requested
-        if let bit = bit {
+        // Apply quantization if requested
+        if let bit = resolvedBit {
             if bit == 4 || bit == 8 {
                 print("Loading model with \(bit)bit quantization")
-                F5TTS.quantize(model: f5tts, bits: bit)
+                // Quantize all Linear layers with input dimension divisible by 64
+                var quantizedWeights: [String: MLXArray] = [:]
+                
+                for (path, param) in f5tts.parameters() {
+                    if path.hasSuffix("weight"),
+                       let array = param as? MLXArray,
+                       array.shape[1] % 64 == 0 {
+                        let (wq, _, _) = MLX.quantized(array, bits: bit)
+                        quantizedWeights[path] = wq
+                    }
+                }
+                
+                // Update the model with quantized weights
+                if !quantizedWeights.isEmpty {
+                    do {
+                        try f5tts.update(parameters: ModuleParameters.unflattened(quantizedWeights))
+                    } catch {
+                        print("Warning: Failed to update quantized weights: \(error)")
+                    }
+                }
             } else {
                 print("Warning: Unsupported bit width \(bit). Skipping quantization.")
             }
         }
 
+        try f5tts.update(parameters: ModuleParameters.unflattened(modelWeights), verify: [.all])
         return f5tts
     }
 }
@@ -388,40 +376,52 @@ public extension F5TTS {
     static var framesPerSecond: Double = .init(sampleRate) / Double(hopLength)
 
     static func loadAudioArray(url: URL) throws -> MLXArray {
-        return try AudioUtilities.loadAudioFile(url: url)
+        let audioFile = try AVAudioFile(forReading: url)
+        let format = audioFile.processingFormat
+        let frameCount = UInt32(audioFile.length)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
+        try audioFile.read(into: buffer)
+        
+        if let floatData = buffer.floatChannelData?[0] {
+            let data = Array(UnsafeBufferPointer(start: floatData, count: Int(frameCount)))
+            return MLXArray(data)
+        }
+        throw F5TTSError.unableToLoadReferenceAudio
     }
 
     static func referenceAudio() throws -> (MLXArray, String) {
         guard let url = Bundle.module.url(forResource: "test_en_1_ref_short", withExtension: "wav") else {
             throw F5TTSError.unableToLoadReferenceAudio
         }
-
-        return try (
-            self.loadAudioArray(url: url),
-            "Some call me nature, others call me mother nature."
-        )
+        let audio = try loadAudioArray(url: url)
+        return (audio, "Some call me nature, others call me mother nature.")
     }
 
-    static func normalizeAudio(audio: MLXArray, targetRMS: Double = 0.1) -> MLXArray {
-        let rms = Double(audio.square().mean().sqrt().item(Float.self))
-        if rms < targetRMS {
-            return audio * targetRMS / rms
+    static func normalizeAudio(audio: MLXArray) -> MLXArray {
+        let rms = MLX.sqrt(MLX.mean(MLX.square(audio)))
+        if rms.item(Float.self) < targetRMS {
+            return audio * (targetRMS / rms)
         }
         return audio
     }
 
-    static func estimatedDuration(refAudio: MLXArray, refText: String, text: String, speed: Double = 1.0) -> TimeInterval {
-        let refDurationInFrames = refAudio.shape[0] / self.hopLength
-        let refTextLength = refText.utf8.count
-        let genTextLength = text.utf8.count
-
-        let refAudioToTextRatio = Double(refDurationInFrames) / Double(refTextLength)
-        let textLength = Double(genTextLength) / speed
+    static func estimateDuration(
+        text: String,
+        referenceAudioDuration: TimeInterval,
+        referenceText: String,
+        speed: Double = 1.0
+    ) -> TimeInterval {
+        let refDurationInFrames = Int(referenceAudioDuration * framesPerSecond)
+        let refTextLength = Double(referenceText.count)
+        let genTextLength = Double(text.count)
+        
+        let refAudioToTextRatio = Double(refDurationInFrames) / refTextLength
+        let textLength = genTextLength / speed
         let estimatedDurationInFrames = Int(refAudioToTextRatio * textLength)
-
+        
         let estimatedDuration = TimeInterval(estimatedDurationInFrames) / Self.framesPerSecond
         print("Using duration of \(estimatedDuration) seconds (\(estimatedDurationInFrames) frames) for generated speech.")
-
+        
         return estimatedDuration
     }
 }
@@ -438,37 +438,111 @@ func lensToMask(t: MLXArray, length: Int? = nil) -> MLXArray {
 
 func padToLength(_ t: MLXArray, length: Int, value: Float? = nil) -> MLXArray {
     let ndim = t.ndim
-
+    
     guard let seqLen = t.shape.last, length > seqLen else {
         return t[0..., .ellipsis]
     }
-
+    
     let paddingValue = MLXArray(value ?? 0.0)
-
-    let padded: MLXArray
-    switch ndim {
-    case 1:
-        padded = MLX.padded(t, widths: [.init((0, length - seqLen))], value: paddingValue)
-    case 2:
-        padded = MLX.padded(t, widths: [.init((0, 0)), .init((0, length - seqLen))], value: paddingValue)
-    case 3:
-        padded = MLX.padded(t, widths: [.init((0, 0)), .init((0, length - seqLen)), .init((0, 0))], value: paddingValue)
-    default:
+    
+    if ndim == 1 {
+        return MLX.padded(t, widths: [.init((0, length - seqLen))], value: paddingValue)
+    } else if ndim == 2 {
+        return MLX.padded(t, widths: [.init((0, 0)), .init((0, length - seqLen))], value: paddingValue)
+    } else {
         fatalError("Unsupported padding dims: \(ndim)")
     }
-
-    return padded[0..., .ellipsis]
 }
 
-func padSequence(_ t: [MLXArray], paddingValue: Float = 0) -> MLXArray {
-    let maxLen = t.map { $0.shape.last ?? 0 }.max() ?? 0
-    let t = MLX.stacked(t, axis: 0)
-    return padToLength(t, length: maxLen, value: paddingValue)
+func padSequence(_ t: [MLXArray], paddingValue: Float = 0.0) -> MLXArray {
+    let maxLen = t.map { $0.shape[0] }.max() ?? 0
+    let padded = t.map { padToLength($0, length: maxLen, value: paddingValue) }
+    return MLX.stacked(padded, axis: 0)
 }
 
-func listStrToIdx(_ text: [String], vocabCharMap: [String: Int], paddingValue: Int = -1) -> MLXArray {
-    let listIdxTensors = text.map { str in str.map { char in vocabCharMap[String(char), default: 0] }}
-    let mlxArrays = listIdxTensors.map { MLXArray($0) }
-    let paddedText = padSequence(mlxArrays, paddingValue: Float(paddingValue))
-    return paddedText.asType(.int32)
+func listStrToIdx(_ text: [String], vocabCharMap: [String: Int]) -> MLXArray {
+    let listIdxTensors = text.map { str -> [Int] in
+        str.map { char in
+            vocabCharMap[String(char)] ?? 0
+        }
+    }
+    
+    let maxLen = listIdxTensors.map { $0.count }.max() ?? 0
+    let padded = listIdxTensors.map { idxs -> [Int] in
+        idxs + Array(repeating: -1, count: maxLen - idxs.count)
+    }
+    
+    return MLXArray(padded.flatMap { $0 }).reshaped([text.count, maxLen])
+}
+
+extension F5TTS {
+    public func quantize(bits: Int = 4) {
+        // Quantize transformer components
+        
+        // Input embedding linear layer
+        quantizeLinear(transformer.input_embed.proj, bits: bits)
+        
+        // Transformer blocks
+        for block in transformer.transformer_blocks {
+            // Attention components
+            quantizeLinear(block.attn.to_q, bits: bits)
+            quantizeLinear(block.attn.to_k, bits: bits)
+            quantizeLinear(block.attn.to_v, bits: bits)
+            if let toOutLinear = block.attn.to_out.layers.first as? Linear {
+                quantizeLinear(toOutLinear, bits: bits)
+            }
+            
+            // Feed forward components
+            if let ff = block.ff.ff.layers.first as? Sequential,
+               let ffLinear = ff.layers.first as? Linear {
+                quantizeLinear(ffLinear, bits: bits)
+            }
+            if let ffOutLinear = block.ff.ff.layers.last as? Linear {
+                quantizeLinear(ffOutLinear, bits: bits)
+            }
+        }
+        
+        // Final projection
+        quantizeLinear(transformer.proj_out, bits: bits)
+        
+        // Duration predictor if present
+        if let durationPredictor = _durationPredictor {
+            // Quantize duration predictor components
+            quantizeLinear(durationPredictor.transformer.input_embed.proj, bits: bits)
+            
+            for block in durationPredictor.transformer.transformer_blocks {
+                quantizeLinear(block.attn.to_q, bits: bits)
+                quantizeLinear(block.attn.to_k, bits: bits)
+                quantizeLinear(block.attn.to_v, bits: bits)
+                if let toOutLinear = block.attn.to_out.layers.first as? Linear {
+                    quantizeLinear(toOutLinear, bits: bits)
+                }
+                
+                if let ff = block.ff.ff.layers.first as? Sequential,
+                   let ffLinear = ff.layers.first as? Linear {
+                    quantizeLinear(ffLinear, bits: bits)
+                }
+                if let ffOutLinear = block.ff.ff.layers.last as? Linear {
+                    quantizeLinear(ffOutLinear, bits: bits)
+                }
+            }
+            
+            if let toPredLinear = durationPredictor.to_pred.layers.first as? Linear {
+                quantizeLinear(toPredLinear, bits: bits)
+            }
+        }
+    }
+    
+    private func quantizeLinear(_ linear: Linear, bits: Int) {
+        let weight = linear.weight
+        let quantization = MLX.quantized(weight, bits: bits)
+        linear.weight = quantization.wq
+        linear.scales = quantization.scales
+        linear.biases = quantization.biases
+        
+        if let bias = linear.bias {
+            let biasQuantization = MLX.quantized(bias, bits: bits)
+            linear.bias = biasQuantization.wq
+        }
+    }
 }

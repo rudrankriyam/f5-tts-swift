@@ -1,13 +1,20 @@
 import Foundation
 import MLX
 import MLXNN
+import MLXRandom
 
 class DurationInputEmbedding: Module {
     let proj: Linear
     let conv_pos_embed: ConvPositionEmbedding
 
     init(melDim: Int, textDim: Int, outDim: Int) {
-        self.proj = Linear(melDim + textDim, outDim)
+        let weight = MLXRandom.uniform(
+            low: -sqrt(1.0 / Float(melDim + textDim)),
+            high: sqrt(1.0 / Float(melDim + textDim)),
+            [outDim, melDim + textDim]
+        )
+        let bias = MLXArray.zeros([outDim])
+        self.proj = Linear(weight: weight, bias: bias)
         self.conv_pos_embed = ConvPositionEmbedding(dim: outDim)
         super.init()
     }
@@ -16,8 +23,9 @@ class DurationInputEmbedding: Module {
         cond: MLXArray,
         textEmbed: MLXArray
     ) -> MLXArray {
-        var output = proj(MLX.concatenated([cond, textEmbed], axis: -1))
-        output = conv_pos_embed(output) + output
+        let combined = MLX.concatenated([cond, textEmbed], axis: -1)
+        var output = proj(combined)
+        output = conv_pos_embed(output)
         return output
     }
 }
@@ -125,16 +133,22 @@ public class DurationPredictor: Module {
         melSpec: MelSpec,
         vocabCharMap: [String: Int]
     ) {
-        self.melSpec = melSpec
-        self.numChannels = self.melSpec.nMels
         self.transformer = transformer
-        self.dim = transformer.dim
+        self.melSpec = melSpec
         self.vocabCharMap = vocabCharMap
-
+        self.dim = transformer.dim
+        self.numChannels = melSpec.nMels
+        
+        let weight = MLXRandom.uniform(
+            low: -sqrt(1.0 / Float(transformer.dim)),
+            high: sqrt(1.0 / Float(transformer.dim)),
+            [1, transformer.dim]
+        )
         self.to_pred = Sequential(layers: [
-            Linear(dim, 1, bias: false), Softplus()
+            Linear(weight: weight, bias: nil),
+            Softplus()
         ])
-
+        
         super.init()
     }
 

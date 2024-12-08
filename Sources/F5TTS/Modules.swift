@@ -295,6 +295,27 @@ open class GroupableConv1d: Module, UnaryLayer {
     }
 }
 
+class Linear: Module, UnaryLayer {
+    public var weight: MLXArray
+    public var bias: MLXArray?
+    public var scales: MLXArray?
+    public var biases: MLXArray?
+
+    public init(weight: MLXArray, bias: MLXArray? = nil) {
+        self.weight = weight
+        self.bias = bias
+        super.init()
+    }
+
+    public func callAsFunction(_ x: MLXArray) -> MLXArray {
+        var output = MLX.matmul(x, weight.T)
+        if let bias = bias {
+            output = output + bias
+        }
+        return output
+    }
+}
+
 class ConvNeXtV2Block: Module, UnaryLayer {
     let dwconv: GroupableConv1d
     let norm: LayerNorm
@@ -307,10 +328,25 @@ class ConvNeXtV2Block: Module, UnaryLayer {
         let padding = (dilation * (7 - 1)) / 2
         self.dwconv = GroupableConv1d(inputChannels: dim, outputChannels: dim, kernelSize: 7, padding: padding, groups: dim)
         self.norm = LayerNorm(dimensions: dim, eps: 1e-6)
-        self.pwconv1 = Linear(dim, intermediateDim)
+        
+        let pwconv1Weight = MLXRandom.uniform(
+            low: -sqrt(1.0 / Float(dim)),
+            high: sqrt(1.0 / Float(dim)),
+            [intermediateDim, dim]
+        )
+        let pwconv1Bias = MLXArray.zeros([intermediateDim])
+        self.pwconv1 = Linear(weight: pwconv1Weight, bias: pwconv1Bias)
+        
         self.act = GELU()
         self.grn = GRN(dim: intermediateDim)
-        self.pwconv2 = Linear(intermediateDim, dim)
+        
+        let pwconv2Weight = MLXRandom.uniform(
+            low: -sqrt(1.0 / Float(intermediateDim)),
+            high: sqrt(1.0 / Float(intermediateDim)),
+            [dim, intermediateDim]
+        )
+        let pwconv2Bias = MLXArray.zeros([dim])
+        self.pwconv2 = Linear(weight: pwconv2Weight, bias: pwconv2Bias)
 
         super.init()
     }
@@ -337,7 +373,15 @@ class AdaLayerNormZero: Module {
 
     init(dim: Int) {
         self.silu = SiLU()
-        self.linear = Linear(dim, dim * 6)
+        
+        let linearWeight = MLXRandom.uniform(
+            low: -sqrt(1.0 / Float(dim)),
+            high: sqrt(1.0 / Float(dim)),
+            [dim * 6, dim]
+        )
+        let linearBias = MLXArray.zeros([dim * 6])
+        self.linear = Linear(weight: linearWeight, bias: linearBias)
+        
         self.norm = LayerNorm(dimensions: dim, eps: 1e-6, affine: false)
         super.init()
     }
@@ -368,7 +412,15 @@ class AdaLayerNormZero_Final: Module {
 
     init(dim: Int) {
         self.silu = SiLU()
-        self.linear = Linear(dim, dim * 2)
+        
+        let linearWeight = MLXRandom.uniform(
+            low: -sqrt(1.0 / Float(dim)),
+            high: sqrt(1.0 / Float(dim)),
+            [dim * 2, dim]
+        )
+        let linearBias = MLXArray.zeros([dim * 2])
+        self.linear = Linear(weight: linearWeight, bias: linearBias)
+        
         self.norm = LayerNorm(dimensions: dim, eps: 1e-6, affine: false)
         super.init()
     }
@@ -401,15 +453,28 @@ class FeedForward: Module {
 
         let activation = GELU(approximation: approximate == "tanh" ? .tanh : .none)
 
+        let projectInWeight = MLXRandom.uniform(
+            low: -sqrt(1.0 / Float(dim)),
+            high: sqrt(1.0 / Float(dim)),
+            [innerDim, dim]
+        )
+        let projectInBias = MLXArray.zeros([innerDim])
         let projectIn = Sequential(layers: [
-            Linear(dim, innerDim),
+            Linear(weight: projectInWeight, bias: projectInBias),
             activation
         ])
+
+        let outputWeight = MLXRandom.uniform(
+            low: -sqrt(1.0 / Float(innerDim)),
+            high: sqrt(1.0 / Float(innerDim)),
+            [outputDim, innerDim]
+        )
+        let outputBias = MLXArray.zeros([outputDim])
 
         self.ff = Sequential(layers: [
             projectIn,
             Dropout(p: dropout),
-            Linear(innerDim, outputDim)
+            Linear(weight: outputWeight, bias: outputBias)
         ])
 
         super.init()
@@ -439,12 +504,24 @@ class Attention: Module {
         self.innerDim = heads * dimHead
         self.dropout = dropout
 
-        self.to_q = Linear(dim, innerDim)
-        self.to_k = Linear(dim, innerDim)
-        self.to_v = Linear(dim, innerDim)
+        let scale = sqrt(1.0 / Float(dim))
+        
+        let qWeight = MLXRandom.uniform(low: -scale, high: scale, [innerDim, dim])
+        let qBias = MLXArray.zeros([innerDim])
+        self.to_q = Linear(weight: qWeight, bias: qBias)
+        
+        let kWeight = MLXRandom.uniform(low: -scale, high: scale, [innerDim, dim])
+        let kBias = MLXArray.zeros([innerDim])
+        self.to_k = Linear(weight: kWeight, bias: kBias)
+        
+        let vWeight = MLXRandom.uniform(low: -scale, high: scale, [innerDim, dim])
+        let vBias = MLXArray.zeros([innerDim])
+        self.to_v = Linear(weight: vWeight, bias: vBias)
 
+        let outWeight = MLXRandom.uniform(low: -scale, high: scale, [dim, innerDim])
+        let outBias = MLXArray.zeros([dim])
         self.to_out = Sequential(layers: [
-            Linear(innerDim, dim),
+            Linear(weight: outWeight, bias: outBias),
             Dropout(p: dropout)
         ])
 
@@ -537,10 +614,17 @@ class TimestepEmbedding: Module {
     init(dim: Int, freqEmbedDim: Int = 256) {
         self.time_embed = SinusPositionEmbedding(dim: freqEmbedDim)
 
+        let scale = sqrt(1.0 / Float(freqEmbedDim))
+        let weight1 = MLXRandom.uniform(low: -scale, high: scale, [dim, freqEmbedDim])
+        let bias1 = MLXArray.zeros([dim])
+        
+        let weight2 = MLXRandom.uniform(low: -scale, high: scale, [dim, dim])
+        let bias2 = MLXArray.zeros([dim])
+
         self.time_mlp = Sequential(
-            layers: [Linear(freqEmbedDim, dim),
+            layers: [Linear(weight: weight1, bias: bias1),
                      SiLU(),
-                     Linear(dim, dim)]
+                     Linear(weight: weight2, bias: bias2)]
         )
 
         super.init()

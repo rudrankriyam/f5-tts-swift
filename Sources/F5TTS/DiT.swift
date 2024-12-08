@@ -1,6 +1,7 @@
 import Foundation
 import MLX
 import MLXNN
+import MLXRandom
 
 class TextEmbedding: Module {
     let text_embed: Embedding
@@ -59,25 +60,24 @@ class InputEmbedding: Module {
     let conv_pos_embed: ConvPositionEmbedding
 
     init(melDim: Int, textDim: Int, outDim: Int) {
-        self.proj = Linear(melDim * 2 + textDim, outDim)
+        let weight = MLXRandom.uniform(
+            low: -sqrt(1.0 / Float(melDim * 2 + textDim)),
+            high: sqrt(1.0 / Float(melDim * 2 + textDim)),
+            [outDim, melDim * 2 + textDim]
+        )
+        let bias = MLXArray.zeros([outDim])
+        self.proj = Linear(weight: weight, bias: bias)
         self.conv_pos_embed = ConvPositionEmbedding(dim: outDim)
         super.init()
     }
 
     func callAsFunction(
-        x: MLXArray,
         cond: MLXArray,
-        textEmbed: MLXArray,
-        dropAudioCond: Bool = false
+        textEmbed: MLXArray
     ) -> MLXArray {
-        var cond = cond
-        if dropAudioCond {
-            cond = MLX.zeros(like: cond)
-        }
-
-        let combined = MLX.concatenated([x, cond, textEmbed], axis: -1)
+        let combined = MLX.concatenated([cond, textEmbed], axis: -1)
         var output = proj(combined)
-        output = conv_pos_embed(output) + output
+        output = conv_pos_embed(output)
         return output
     }
 }
@@ -86,6 +86,7 @@ class InputEmbedding: Module {
 
 public class DiT: Module {
     let dim: Int
+    let depth: Int
     let time_embed: TimestepEmbedding
     let text_embed: TextEmbedding
     let input_embed: InputEmbedding
@@ -93,7 +94,6 @@ public class DiT: Module {
     let transformer_blocks: [DiTBlock]
     let norm_out: AdaLayerNormZero_Final
     let proj_out: Linear
-    let depth: Int
 
     init(
         dim: Int,
@@ -120,7 +120,14 @@ public class DiT: Module {
         }
 
         self.norm_out = AdaLayerNormZero_Final(dim: dim)
-        self.proj_out = Linear(dim, melDim)
+        
+        let projWeight = MLXRandom.uniform(
+            low: -sqrt(1.0 / Float(dim)),
+            high: sqrt(1.0 / Float(dim)),
+            [melDim, dim]
+        )
+        let projBias = MLXArray.zeros([melDim])
+        self.proj_out = Linear(weight: projWeight, bias: projBias)
 
         super.init()
     }
@@ -140,7 +147,7 @@ public class DiT: Module {
         let time = (time.ndim == 0) ? MLX.repeated(time.expandedDimensions(axis: 0), count: batchSize, axis: 0) : time
         let t = time_embed(time)
         let textEmbed = text_embed(text, seqLen: seqLen, dropText: dropText)
-        var x = input_embed(x: x, cond: cond, textEmbed: textEmbed, dropAudioCond: dropAudioCond)
+        var x = input_embed(cond: cond, textEmbed: textEmbed)
 
         let rope = rotary_embed.forwardFromSeqLen(seqLen)
 
