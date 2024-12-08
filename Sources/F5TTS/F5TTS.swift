@@ -329,6 +329,55 @@ public extension F5TTS {
 
         return f5tts
     }
+
+    /// Quantize the linear layers in the model.
+    /// - Parameters:
+    ///   - model: The model to quantize
+    ///   - bits: Number of bits for quantization (4 or 8)
+    ///   - predicate: Optional predicate to determine which linear layers to quantize
+    static func quantize(model: Module, bits: Int, predicate: ((Module) -> Bool)? = nil) {
+        let defaultPredicate: (Module) -> Bool = { module in
+            if let linear = module as? Linear {
+                return linear.weight.shape[1] % 64 == 0
+            }
+            return false
+        }
+        
+        let actualPredicate = predicate ?? defaultPredicate
+        
+        model.visit { _, module in
+            if actualPredicate(module) {
+                if let linear = module as? Linear {
+                    // Quantize the weights
+                    let weight = linear.weight
+                    let quantizedWeight = MLX.quantize(weight, bits: bits)
+                    linear.weight.update(quantizedWeight)
+                    
+                    // Quantize bias if present
+                    if let bias = linear.bias {
+                        let quantizedBias = MLX.quantize(bias, bits: bits)
+                        linear.bias?.update(quantizedBias)
+                    }
+                }
+            }
+        }
+    }
+
+    public static func fromPretrained(modelDirectoryURL: URL, bit: Int? = nil) throws -> F5TTS {
+        let f5tts = try self.fromPretrained(modelDirectoryURL: modelDirectoryURL)
+
+        // Add quantization if requested
+        if let bit = bit {
+            if bit == 4 || bit == 8 {
+                print("Loading model with \(bit)bit quantization")
+                F5TTS.quantize(model: f5tts, bits: bit)
+            } else {
+                print("Warning: Unsupported bit width \(bit). Skipping quantization.")
+            }
+        }
+
+        return f5tts
+    }
 }
 
 // MARK: - Utilities
