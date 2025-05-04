@@ -398,7 +398,7 @@ extension F5TTS {
         } else if key.contains(".ff.ff.2") {
           key = key.replacingOccurrences(of: ".ff.ff.2", with: ".ff.ff.layers.2")
         } else if key.contains(".time_mlp") {
-          key = key.replacingOccurrences(of: ".time_mlp", with: ".timeMLP.layers")
+          key = key.replacingOccurrences(of: ".time_mlp", with: ".time_mlp.layers")
         } else if key.contains(".conv1d") && !key.contains(".conv1d.layers") {
           key = key.replacingOccurrences(of: ".conv1d", with: ".conv1d.layers")
         }
