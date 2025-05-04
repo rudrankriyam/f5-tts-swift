@@ -304,21 +304,26 @@ public class F5TTS: Module {
 // MARK: - Pretrained Models
 
 extension F5TTS {
-  public static func fromPretrained(repoId: String, downloadProgress: ((Progress) -> Void)? = nil)
-    async throws -> F5TTS
-  {
+  public static func fromPretrained(
+    repoId: String,
+    downloadProgress: ((Progress) -> Void)? = nil,
+    quantizationBits: Int? = nil
+  ) async throws -> F5TTS {
     let modelDirectoryURL = try await Hub.snapshot(
       from: repoId, matching: ["*.safetensors", "*.txt"]
     ) { progress in
       downloadProgress?(progress)
     }
-    return try self.fromPretrained(modelDirectoryURL: modelDirectoryURL)
+    return try self.fromPretrained(
+      modelDirectoryURL: modelDirectoryURL, quantizationBits: quantizationBits)
   }
 
   public static func fromPretrained(modelDirectoryURL: URL, quantizationBits: Int? = nil) throws
     -> F5TTS
   {
-    let modelURL = modelDirectoryURL.appendingPathComponent("model.safetensors")
+    let modelFilename = "model_v1.safetensors"
+
+    let modelURL = modelDirectoryURL.appendingPathComponent(modelFilename)
     // We load the original (non-quantized) weights first
     let modelWeights = try loadArrays(url: modelURL)
 
