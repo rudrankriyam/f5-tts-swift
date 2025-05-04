@@ -304,27 +304,19 @@ public class F5TTS: Module {
 // MARK: - Pretrained Models
 
 extension F5TTS {
-  public static func fromPretrained(
-    repoId: String,
-    downloadProgress: ((Progress) -> Void)? = nil,
-    quantizationBits: Int? = nil
-  ) async throws -> F5TTS {
+  public static func fromPretrained(repoId: String, downloadProgress: ((Progress) -> Void)? = nil)
+    async throws -> F5TTS
+  {
     let modelDirectoryURL = try await Hub.snapshot(
       from: repoId, matching: ["*.safetensors", "*.txt"]
     ) { progress in
       downloadProgress?(progress)
     }
-    return try self.fromPretrained(
-      modelDirectoryURL: modelDirectoryURL, quantizationBits: quantizationBits)
+    return try self.fromPretrained(modelDirectoryURL: modelDirectoryURL)
   }
 
-  public static func fromPretrained(modelDirectoryURL: URL, quantizationBits: Int? = nil) throws
-    -> F5TTS
-  {
-    let modelFilename = "model_v1.safetensors"
-
-    let modelURL = modelDirectoryURL.appendingPathComponent(modelFilename)
-    // We load the original (non-quantized) weights first
+  public static func fromPretrained(modelDirectoryURL: URL) throws -> F5TTS {
+    let modelURL = modelDirectoryURL.appendingPathComponent("model.safetensors")
     let modelWeights = try loadArrays(url: modelURL)
 
     // mel spec
@@ -392,41 +384,7 @@ extension F5TTS {
       vocabCharMap: vocab,
       durationPredictor: durationPredictor
     )
-
-    // Load the original weights into the model structure
     try f5tts.update(parameters: ModuleParameters.unflattened(modelWeights), verify: [.all])
-
-    // --- Add Quantization Logic ---
-    if let bits = quantizationBits {
-      // Define the group size, matching the Python implicit assumption/predicate
-      let groupSize = 64
-
-      quantize(
-        model: f5tts,
-        groupSize: groupSize,
-        bits: bits,
-        filter: { path, module in
-          // Quantize Linear layers where input dimensions are divisible by groupSize
-          guard let linearLayer = module as? Linear else {
-            return false
-          }
-          // Weight shape is [outputDimensions, inputDimensions]
-          let inputDimensions = linearLayer.weight.shape[1]
-          return inputDimensions % groupSize == 0
-        },
-        apply: { module, groupSize, bits in
-          // Create QuantizedLinear from Linear
-          if let linearLayer = module as? Linear {
-            return QuantizedLinear(linearLayer, groupSize: groupSize, bits: bits)
-          }
-          return nil
-        }
-      )
-    }
-    // --- End Quantization Logic ---
-
-    // Evaluate parameters after loading and potential quantization
-    eval(f5tts.parameters())
 
     return f5tts
   }
