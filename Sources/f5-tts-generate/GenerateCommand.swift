@@ -58,8 +58,7 @@ struct GenerateAudio: AsyncParsableCommand {
     }
 
     let f5tts = try F5TTS.fromPretrained(
-      modelDirectoryURL: modelDirectoryURL,
-      quantizationBits: q
+      modelDirectoryURL: modelDirectoryURL
     )
 
     let startTime = Date()
