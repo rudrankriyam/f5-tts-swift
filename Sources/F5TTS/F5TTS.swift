@@ -390,7 +390,7 @@ extension F5TTS {
         if key.isEmpty || key.contains("mel_spec.") || ["initted", "step"].contains(key) {
           continue
         } else if key.contains(".to_out") {
-          key = key.replacingOccurrences(of: ".to_out", with: ".toOut.layers")
+          key = key.replacingOccurrences(of: ".to_out", with: ".to_out.layers")
         } else if key.contains(".text_blocks") {
           key = key.replacingOccurrences(of: ".text_blocks", with: ".text_blocks.layers")
         } else if key.contains(".ff.ff.0.0") {
@@ -403,13 +403,13 @@ extension F5TTS {
           key = key.replacingOccurrences(of: ".conv1d", with: ".conv1d.layers")
         }
 
+        // Handle Specific Layer Weights & Transpositions
         if key.hasSuffix(".dwconv.weight") {
-          key = key.replacingOccurrences(of: ".dwconv.weight", with: ".weight")
           value = value.transposed(0, 2, 1)
         } else if key.hasSuffix(".dwconv.bias") {
-          key = key.replacingOccurrences(of: ".dwconv.bias", with: ".bias")
-        } else if key.hasSuffix(".conv1d.layers.0.weight")
-          || key.hasSuffix(".conv1d.layers.2.weight")
+        }
+        // Transpose standard Conv1D weights
+        else if key.hasSuffix(".conv1d.layers.0.weight") || key.hasSuffix(".conv1d.layers.2.weight")
         {
           value = value.transposed(0, 2, 1)
         }
