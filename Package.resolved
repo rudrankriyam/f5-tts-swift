@@ -5,8 +5,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/maiqingqiang/Jinja",
       "state" : {
-        "revision" : "6dbe4c449469fb586d0f7339f900f0dd4d78b167",
-        "version" : "1.0.6"
+        "revision" : "31c4dd39bcdc07eaa42a384bdc88ea599022b800",
+        "version" : "1.1.2"
       }
     },
     {
@@ -25,6 +25,15 @@
       "state" : {
         "revision" : "41982a3656a71c768319979febd796c6fd111d5c",
         "version" : "1.5.0"
+      }
+    },
+    {
+      "identity" : "swift-collections",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-collections.git",
+      "state" : {
+        "revision" : "671108c96644956dddcd89dd59c203dcdb36cec7",
+        "version" : "1.1.4"
       }
     },
     {

@@ -392,7 +392,7 @@ extension F5TTS {
         } else if key.contains(".to_out") {
           key = key.replacingOccurrences(of: ".to_out", with: ".toOut.layers")
         } else if key.contains(".text_blocks") {
-          key = key.replacingOccurrences(of: ".text_blocks", with: ".textBlocks.layers")
+          key = key.replacingOccurrences(of: ".text_blocks", with: ".text_blocks.layers")
         } else if key.contains(".ff.ff.0.0") {
           key = key.replacingOccurrences(of: ".ff.ff.0.0", with: ".ff.ff.layers.0.layers.0")
         } else if key.contains(".ff.ff.2") {
