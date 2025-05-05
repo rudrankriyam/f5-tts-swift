@@ -339,17 +339,83 @@ extension F5TTS {
     let vocabEntries = vocabString.split(separator: "\n").map { String($0) }
     let vocab = Dictionary(uniqueKeysWithValues: zip(vocabEntries, vocabEntries.indices))
 
-    // Attempt to load duration predictor (same logic regardless of main model quantization)
+    // --- Helper function for weight conversion ---
+    func convertWeights(_ originalWeights: [String: MLXArray]) -> [String: MLXArray] {
+      print("Converting weights...")
+      var finalWeights: [String: MLXArray] = [:]
+      for (k, v) in originalWeights {
+        var key = k.replacingOccurrences(of: "ema_model.", with: "")  // Remove potential prefix
+        var value = v
+
+        // Skip unnecessary keys
+        if key.isEmpty || key.contains("mel_spec.") || ["initted", "step"].contains(key) {
+          continue
+        }
+
+        // --- Key Renaming for Refactored Sequential Modules ---
+
+        // FeedForward (ff -> linear1, activation, dropout, linear2)
+        key = key.replacingOccurrences(of: ".ff.ff.layers.0.layers.0.", with: ".ff.linear1.")  // Maps projectIn linear
+        key = key.replacingOccurrences(of: ".ff.ff.layers.2.", with: ".ff.linear2.")  // Maps final linear
+
+        // TimestepEmbedding (time_mlp -> time_mlp_linear1, time_mlp_activation, time_mlp_linear2)
+        key = key.replacingOccurrences(of: ".time_mlp.layers.0.", with: ".time_mlp_linear1.")
+        key = key.replacingOccurrences(of: ".time_mlp.layers.2.", with: ".time_mlp_linear2.")
+
+        // Attention (to_out -> to_out_linear, to_out_dropout)
+        key = key.replacingOccurrences(of: ".to_out.layers.0.", with: ".to_out_linear.")
+
+        // ConvPositionEmbedding (conv1d -> conv1, act1, conv2, act2)
+        key = key.replacingOccurrences(of: ".conv1d.layers.0.", with: ".conv1.")
+        key = key.replacingOccurrences(of: ".conv1d.layers.2.", with: ".conv2.")
+
+        // TextEmbedding (text_blocks: Sequential -> [ConvNeXtV2Block])
+        // This replaces .text_blocks.layers.N. with .text_blocks.N.
+        if key.contains(".text_blocks.layers.") {
+          if let range = key.range(of: ".text_blocks.layers.") {
+            let suffix = key[range.upperBound...]
+            if let numberEndIndex = suffix.firstIndex(of: ".") {
+              let numberString = String(suffix[..<numberEndIndex])
+              let restOfKey = suffix[numberEndIndex...]
+              key = "text_blocks.\(numberString)\(restOfKey)"
+            }  // else: handle cases if format is unexpected?
+          }
+        }
+
+        // DurationPredictor (to_pred -> to_pred_linear, to_pred_activation)
+        key = key.replacingOccurrences(of: ".to_pred.layers.0.", with: ".to_pred_linear.")
+
+        // --- Original Transpositions (Keep these) ---
+        if key.hasSuffix(".dwconv.weight") {
+          value = value.transposed(0, 2, 1)
+        } else if key.hasSuffix(".conv1.weight")  // Adjusted for refactored ConvPositionEmbedding
+          || key.hasSuffix(".conv2.weight")  // Adjusted for refactored ConvPositionEmbedding
+        {
+          value = value.transposed(0, 2, 1)
+        }
+        // Note: Removed transposition check for .dwconv.bias as it wasn't doing anything.
+
+        finalWeights[key] = value
+      }
+      return finalWeights
+    }
+    // --- End Helper ---
+
+    // Attempt to load duration predictor
     var durationPredictor: DurationPredictor?
     let durationModelURL = modelDirectoryURL.appendingPathComponent("duration_v2.safetensors")
     do {
-      let durationModelWeights = try loadArrays(url: durationModelURL)
+      var durationModelWeights = try loadArrays(url: durationModelURL)
+      // Convert duration predictor weights
+      durationModelWeights = convertWeights(durationModelWeights)
+
       let durationTransformer = DurationTransformer(
         dim: 512, depth: 8, heads: 8, dimHead: 64, ffMult: 2,
         textNumEmbeds: vocab.count, textDim: 512, convLayers: 2
       )
       let predictorMelSpec = MelSpec(filterbank: filterbank)
-      predictorMelSpec.freeze(recursive: false, keys: ["filterbank"])
+      // Assuming melSpec doesn't need @ModuleInfo as filterbank isn't a Module?
+      // predictorMelSpec.freeze(recursive: false, keys: ["filterbank"]) // Freezing might need ModuleInfo? Check if needed.
       let predictor = DurationPredictor(
         transformer: durationTransformer,
         melSpec: predictorMelSpec,
@@ -369,7 +435,7 @@ extension F5TTS {
     )
     let f5tts = F5TTS(
       transformer: dit,
-      melSpec: MelSpec(filterbank: filterbank),
+      melSpec: MelSpec(filterbank: filterbank),  // Same question about ModuleInfo for melSpec here
       vocabCharMap: vocab,
       durationPredictor: durationPredictor
     )
@@ -386,69 +452,47 @@ extension F5TTS {
         groupSize: groupSize,
         bits: bits,
         filter: { path, module in
+          // Example: Quantize only Linear layers divisible by groupSize
           guard let linearLayer = module as? Linear else { return false }
+          // Ensure weight exists and has at least 2 dimensions for shape check
+          guard linearLayer.parameters().keys.contains("weight"), linearLayer.weight.ndim >= 2
+          else { return false }
           return linearLayer.weight.shape[1] % groupSize == 0
         },
         apply: { module, groupSize, bits in
+          // Custom apply logic: Convert Linear to QuantizedLinear
           if let linearLayer = module as? Linear {
+            // Add check to ensure weight exists before creating QuantizedLinear
+            guard linearLayer.parameters().keys.contains("weight") else { return nil }
+            // Use the standard initializer instead of deprecated .from
             return QuantizedLinear(linearLayer, groupSize: groupSize, bits: bits)
           }
-          return nil
+          return nil  // Return nil if module is not Linear or has no weight
         }
       )
+
       // --- Load Pre-Quantized Weights ---
       print("Loading pre-quantized weights from \(modelFilename)...")
-      weightsToLoad = try loadArrays(url: modelURL)
-      // No conversion needed as structure now matches quantized file
+      let originalQuantizedWeights = try loadArrays(url: modelURL)
+      // --- Apply Weight Conversion to loaded weights ---
+      weightsToLoad = convertWeights(originalQuantizedWeights)
 
     } else {
       // --- Load Non-Quantized Weights ---
       print("Loading non-quantized weights from \(modelFilename)...")
       let originalWeights = try loadArrays(url: modelURL)
-
       // --- Apply Weight Conversion ---
-      print("Converting weights...")
-      var finalWeights: [String: MLXArray] = [:]
-      for (k, v) in originalWeights {
-        var key = k.replacingOccurrences(of: "ema_model.", with: "")
-        var value = v
-        // Apply renames and transpositions
-        if key.isEmpty || key.contains("mel_spec.") || ["initted", "step"].contains(key) {
-          continue
-        } else if key.contains(".to_out") {
-          key = key.replacingOccurrences(of: ".to_out", with: ".to_out.layers")
-        } else if key.contains(".text_blocks") {
-          key = key.replacingOccurrences(of: ".text_blocks", with: ".text_blocks.layers")
-        } else if key.contains(".ff.ff.0.0") {
-          key = key.replacingOccurrences(of: ".ff.ff.0.0", with: ".ff.ff.layers.0.layers.0")
-        } else if key.contains(".ff.ff.2") {
-          key = key.replacingOccurrences(of: ".ff.ff.2", with: ".ff.ff.layers.2")
-        } else if key.contains(".time_mlp") {
-          key = key.replacingOccurrences(of: ".time_mlp", with: ".time_mlp.layers")
-        } else if key.contains(".conv1d") && !key.contains(".conv1d.layers") {
-          key = key.replacingOccurrences(of: ".conv1d", with: ".conv1d.layers")
-        }
-
-        if key.hasSuffix(".dwconv.weight") {
-          value = value.transposed(0, 2, 1)
-        } else if key.hasSuffix(".dwconv.bias") {
-          // No transpose needed
-        } else if key.hasSuffix(".conv1d.layers.0.weight")
-          || key.hasSuffix(".conv1d.layers.2.weight")
-        {
-          value = value.transposed(0, 2, 1)
-        }
-        finalWeights[key] = value
-      }
-      weightsToLoad = finalWeights
-      // No quantization call needed here
+      weightsToLoad = convertWeights(originalWeights)
     }
 
     // Load the appropriately prepared weights
+    print("Updating model with final weights...")
     try f5tts.update(parameters: ModuleParameters.unflattened(weightsToLoad), verify: [.all])
 
     // Evaluate parameters after loading
+    print("Evaluating final parameters...")
     eval(f5tts.parameters())
+    print("Model loaded successfully.")
 
     return f5tts
   }
