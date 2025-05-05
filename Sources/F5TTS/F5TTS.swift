@@ -390,23 +390,21 @@ extension F5TTS {
         let originalShape = value.shape  // Debug: Store original shape
 
         if key.hasSuffix(".dwconv.weight") {
+          // Keep transposition for dwconv if needed by ConvNeXtV2Block
           value = value.transposed(0, 2, 1)
           didTranspose = true
-        } else if key.hasSuffix(".conv1.weight")  // Adjusted for refactored ConvPositionEmbedding
+        }
+        // Remove transposition for .conv1.weight and .conv2.weight as they are already correct
+        /* else if key.hasSuffix(".conv1.weight")  // Adjusted for refactored ConvPositionEmbedding
           || key.hasSuffix(".conv2.weight")  // Adjusted for refactored ConvPositionEmbedding
         {
           // Debug: Print before transposition for relevant keys
-          print("DEBUG: Transposing key: \(key), Original Shape: \(originalShape)")
+          // print("DEBUG: Transposing key: \(key), Original Shape: \(originalShape)")
           value = value.transposed(0, 2, 1)
           didTranspose = true
           // Debug: Print after transposition
-          print("DEBUG: Transposed key: \(key), New Shape: \(value.shape)")
-        }
-
-        // Debug: Print if transposition happened for other keys unexpectedly (shouldn't happen)
-        // else if didTranspose {
-        //    print("DEBUG: Key \(key) was NOT transposed but flag was true?")
-        // }
+          // print("DEBUG: Transposed key: \(key), New Shape: \(value.shape)")
+        } */
 
         // Note: Removed transposition check for .dwconv.bias as it wasn't doing anything.
 
