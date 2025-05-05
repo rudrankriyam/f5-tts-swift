@@ -108,6 +108,24 @@ public class DurationTransformer: Module {
   }
 }
 
+// Custom Module to encapsulate the final layers of DurationPredictor
+class PredictorHead: Module {
+  @ModuleInfo var linear: Linear
+  @ModuleInfo var activation: Softplus  // Softplus typically has no weights/params
+
+  init(dim: Int) {
+    self.linear = Linear(dim, 1, bias: false)
+    self.activation = Softplus()
+    super.init()
+  }
+
+  func callAsFunction(_ x: MLXArray) -> MLXArray {
+    var y = linear(x)
+    y = activation(y)
+    return y
+  }
+}
+
 public class DurationPredictor: Module {
   enum DurationPredictorError: Error {
     case unableToLoadModel
@@ -121,8 +139,7 @@ public class DurationPredictor: Module {
   let dim: Int
   let numChannels: Int
   let vocabCharMap: [String: Int]
-  @ModuleInfo var to_pred_linear: Linear
-  @ModuleInfo var to_pred_activation: Softplus
+  @ModuleInfo var to_pred: PredictorHead
 
   init(
     transformer: DurationTransformer,
@@ -135,8 +152,7 @@ public class DurationPredictor: Module {
     self.dim = transformer.dim
     self.vocabCharMap = vocabCharMap
 
-    self.to_pred_linear = Linear(dim, 1, bias: false)
-    self.to_pred_activation = Softplus()
+    self.to_pred = PredictorHead(dim: dim)
 
     super.init()
   }
@@ -163,9 +179,8 @@ public class DurationPredictor: Module {
 
     var output = transformer(cond: cond, text: inputText)
 
-    // Manual forward pass for to_pred
-    output = to_pred_linear(output)
-    output = to_pred_activation(output)
+    // Use the new to_pred module
+    output = to_pred(output)
 
     output = output.mean().reshaped([batch, -1])
     output.eval()

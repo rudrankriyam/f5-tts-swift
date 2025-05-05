@@ -383,14 +383,14 @@ extension F5TTS {
           }  // else: format unexpected
         }
 
-        // DurationPredictor (to_pred -> to_pred_linear, to_pred_activation)
-        // Handle potential missing leading dot from original file keys
+        // DurationPredictor (to_pred: Sequential -> PredictorHead)
+        // Rename old sequential layer key to the new nested linear layer key
         if key.hasPrefix("to_pred.layers.0.") {
           key = key.replacingOccurrences(
-            of: "to_pred.layers.0.", with: "to_pred_linear.", options: .anchored, range: nil)
+            of: "to_pred.layers.0.", with: "to_pred.linear.", options: .anchored, range: nil)
         } else {
-          // Original logic in case it does have a leading dot in some files
-          key = key.replacingOccurrences(of: ".to_pred.layers.0.", with: ".to_pred_linear.")
+          // Check for keys within the duration predictor path if needed (less likely now)
+          key = key.replacingOccurrences(of: ".to_pred.layers.0.", with: ".to_pred.linear.")
         }
 
         // --- Original Transpositions (Keep these) ---
@@ -398,21 +398,15 @@ extension F5TTS {
         let originalShape = value.shape  // Debug: Store original shape
 
         if key.hasSuffix(".dwconv.weight") {
-          // Keep transposition for dwconv if needed by ConvNeXtV2Block
-          value = value.transposed(0, 2, 1)
-          didTranspose = true
-        }
-        // Remove transposition for .conv1.weight and .conv2.weight as they are already correct
-        /* else if key.hasSuffix(".conv1.weight")  // Adjusted for refactored ConvPositionEmbedding
-          || key.hasSuffix(".conv2.weight")  // Adjusted for refactored ConvPositionEmbedding
-        {
-          // Debug: Print before transposition for relevant keys
-          // print("DEBUG: Transposing key: \(key), Original Shape: \(originalShape)")
+          // Debug: Print before transposition for dwconv
+          print("DEBUG (dwconv): Transposing key: \(key), Original Shape: \(originalShape)")
           value = value.transposed(0, 2, 1)
           didTranspose = true
           // Debug: Print after transposition
-          // print("DEBUG: Transposed key: \(key), New Shape: \(value.shape)")
-        } */
+          print("DEBUG (dwconv): Transposed key: \(key), New Shape: \(value.shape)")
+        }
+        // Remove transposition for .conv1.weight and .conv2.weight as they are already correct
+        /* else if key.hasSuffix(".conv1.weight") ... */
 
         // Note: Removed transposition check for .dwconv.bias as it wasn't doing anything.
 
