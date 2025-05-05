@@ -344,6 +344,7 @@ extension F5TTS {
       print("Converting weights...")
       var finalWeights: [String: MLXArray] = [:]
       for (k, v) in originalWeights {
+        let originalKey = k  // Store original key for debugging
         var key = k.replacingOccurrences(of: "ema_model.", with: "")  // Remove potential prefix
         var value = v
 
@@ -353,6 +354,7 @@ extension F5TTS {
         }
 
         // --- Key Renaming for Refactored Sequential Modules ---
+        let keyBeforeRenaming = key  // Debug: Store key before specific renames
 
         // FeedForward (ff -> linear1, activation, dropout, linear2)
         key = key.replacingOccurrences(of: ".ff.ff.layers.0.layers.0.", with: ".ff.linear1.")  // Maps projectIn linear
@@ -407,6 +409,16 @@ extension F5TTS {
         } */
 
         // Note: Removed transposition check for .dwconv.bias as it wasn't doing anything.
+
+        // Debug: Print original and final keys
+        if originalKey != key {  // Only print if a change occurred
+          print("DEBUG: Key Renamed: \'\(originalKey)\' -> \'\(key)\'")
+        } else if keyBeforeRenaming != key {  // Print if specific renames happened
+          print("DEBUG: Key Renamed (Specific): \'\(keyBeforeRenaming)\' -> \'\(key)\'")
+        } else if key.contains("text_blocks") || key.contains("to_pred") {
+          // Print keys related to the problem areas even if not renamed
+          print("DEBUG: Key Processed (Unchanged?): \'\(key)\' (Original: \'\(originalKey)\')")
+        }
 
         finalWeights[key] = value
       }
