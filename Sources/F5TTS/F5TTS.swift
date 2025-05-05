@@ -397,6 +397,8 @@ extension F5TTS {
         var didTranspose = false  // Debug flag
         let originalShape = value.shape  // Debug: Store original shape
 
+        // REMOVE transposition for dwconv as weights are already correct shape
+        /*
         if key.hasSuffix(".dwconv.weight") {
           // Debug: Print before transposition for dwconv
           print("DEBUG (dwconv): Transposing key: \(key), Original Shape: \(originalShape)")
@@ -405,6 +407,8 @@ extension F5TTS {
           // Debug: Print after transposition
           print("DEBUG (dwconv): Transposed key: \(key), New Shape: \(value.shape)")
         }
+        */
+
         // Remove transposition for .conv1.weight and .conv2.weight as they are already correct
         /* else if key.hasSuffix(".conv1.weight") ... */
 
