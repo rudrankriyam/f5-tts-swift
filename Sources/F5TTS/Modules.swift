@@ -215,21 +215,22 @@ class SinusPositionEmbedding: Module {
 // convolutional position embedding
 
 class ConvPositionEmbedding: Module {
-  @ModuleInfo var conv1d: Sequential
+  @ModuleInfo var conv1: GroupableConv1d
+  @ModuleInfo var act1: Mish
+  @ModuleInfo var conv2: GroupableConv1d
+  @ModuleInfo var act2: Mish
 
   init(dim: Int, kernelSize: Int = 31, groups: Int = 16) {
     precondition(kernelSize % 2 != 0, "Kernel size must be odd.")
 
-    self.conv1d = Sequential(layers: [
-      GroupableConv1d(
-        inputChannels: dim, outputChannels: dim, kernelSize: kernelSize, padding: kernelSize / 2,
-        groups: groups),
-      Mish(),
-      GroupableConv1d(
-        inputChannels: dim, outputChannels: dim, kernelSize: kernelSize, padding: kernelSize / 2,
-        groups: groups),
-      Mish(),
-    ])
+    self.conv1 = GroupableConv1d(
+      inputChannels: dim, outputChannels: dim, kernelSize: kernelSize, padding: kernelSize / 2,
+      groups: groups)
+    self.act1 = Mish()
+    self.conv2 = GroupableConv1d(
+      inputChannels: dim, outputChannels: dim, kernelSize: kernelSize, padding: kernelSize / 2,
+      groups: groups)
+    self.act2 = Mish()
 
     super.init()
   }
@@ -242,7 +243,11 @@ class ConvPositionEmbedding: Module {
       input = input * expandedMask
     }
 
-    var output = conv1d(input)
+    var output = input
+    output = conv1(output)
+    output = act1(output)
+    output = conv2(output)
+    output = act2(output)
 
     if let mask = mask {
       let expandedMask = MLX.expandedDimensions(mask, axis: -1)
@@ -428,7 +433,10 @@ class AdaLayerNormZero_Final: Module {
 // feed forward
 
 class FeedForward: Module {
-  @ModuleInfo var ff: Sequential
+  @ModuleInfo var linear1: Linear
+  @ModuleInfo var activation: GELU
+  @ModuleInfo var dropout: Dropout
+  @ModuleInfo var linear2: Linear
 
   init(
     dim: Int, dimOut: Int? = nil, mult: Int = 4, dropout: Float = 0.0, approximate: String = "none"
@@ -436,24 +444,20 @@ class FeedForward: Module {
     let innerDim = Int(dim * mult)
     let outputDim = dimOut ?? dim
 
-    let activation = GELU(approximation: approximate == "tanh" ? .tanh : .none)
-
-    let projectIn = Sequential(layers: [
-      Linear(dim, innerDim),
-      activation,
-    ])
-
-    self.ff = Sequential(layers: [
-      projectIn,
-      Dropout(p: dropout),
-      Linear(innerDim, outputDim),
-    ])
+    self.linear1 = Linear(dim, innerDim)
+    self.activation = GELU(approximation: approximate == "tanh" ? .tanh : .none)
+    self.dropout = Dropout(p: dropout)
+    self.linear2 = Linear(innerDim, outputDim)
 
     super.init()
   }
 
   func callAsFunction(_ x: MLXArray) -> MLXArray {
-    return ff(x)
+    var y = linear1(x)
+    y = activation(y)
+    y = dropout(y)
+    y = linear2(y)
+    return y
   }
 }
 
@@ -468,7 +472,8 @@ class Attention: Module {
   @ModuleInfo var to_q: Linear
   @ModuleInfo var to_k: Linear
   @ModuleInfo var to_v: Linear
-  @ModuleInfo var to_out: Sequential
+  @ModuleInfo var to_out_linear: Linear
+  @ModuleInfo var to_out_dropout: Dropout
 
   init(dim: Int, heads: Int = 8, dimHead: Int = 64, dropout: Float = 0.0) {
     self.dim = dim
@@ -480,10 +485,8 @@ class Attention: Module {
     self.to_k = Linear(dim, innerDim)
     self.to_v = Linear(dim, innerDim)
 
-    self.to_out = Sequential(layers: [
-      Linear(innerDim, dim),
-      Dropout(p: dropout),
-    ])
+    self.to_out_linear = Linear(innerDim, dim)
+    self.to_out_dropout = Dropout(p: dropout)
 
     super.init()
   }
@@ -522,7 +525,9 @@ class Attention: Module {
       queries: query, keys: key, values: value, scale: Float(scaleFactor), mask: attnMask)
 
     output = output.transposed(axes: [0, 2, 1, 3]).reshaped([batch, seqLen, -1])
-    output = to_out(output)
+
+    output = to_out_linear(output)
+    output = to_out_dropout(output)
 
     if let mask = mask {
       let maskReshaped = mask.reshaped([batch, seqLen, 1])
@@ -576,25 +581,47 @@ class DiTBlock: Module {
 
 class TimestepEmbedding: Module {
   @ModuleInfo var time_embed: SinusPositionEmbedding
-  @ModuleInfo var time_mlp: Sequential
+  @ModuleInfo var time_mlp_linear1: Linear
+  @ModuleInfo var time_mlp_activation: SiLU
+  @ModuleInfo var time_mlp_linear2: Linear
 
   init(dim: Int, freqEmbedDim: Int = 256) {
     self.time_embed = SinusPositionEmbedding(dim: freqEmbedDim)
 
-    self.time_mlp = Sequential(
-      layers: [
-        Linear(freqEmbedDim, dim),
-        SiLU(),
-        Linear(dim, dim),
-      ]
-    )
+    self.time_mlp_linear1 = Linear(freqEmbedDim, dim)
+    self.time_mlp_activation = SiLU()
+    self.time_mlp_linear2 = Linear(dim, dim)
 
     super.init()
   }
 
   func callAsFunction(_ timestep: MLXArray) -> MLXArray {
     let timeHidden = time_embed(timestep)
-    let time = time_mlp(timeHidden)
+    var time = time_mlp_linear1(timeHidden)
+    time = time_mlp_activation(time)
+    time = time_mlp_linear2(time)
     return time
   }
 }
+
+// MARK: - Duration Predictor Related (Potentially move to separate file)
+
+// Text embedding (If TextEmbedding is defined elsewhere, ensure it's updated if it uses Sequential)
+// Assuming TextEmbedding exists and might need similar refactoring if it internally uses Sequential.
+// If TextEmbedding is simple enough or defined outside Modules.swift, it might be okay.
+
+// Example Placeholder if TextEmbedding needs refactoring (adjust based on actual TextEmbedding)
+/*
+class TextEmbedding: Module {
+    @ModuleInfo var embedding: Embedding
+    // ... potentially other layers like convs if convLayers > 0
+
+    init(...) { ... }
+
+    func callAsFunction(...) -> MLXArray {
+        var x = embedding(...)
+        // ... apply other layers manually ...
+        return x
+    }
+}
+*/

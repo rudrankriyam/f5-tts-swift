@@ -121,7 +121,8 @@ public class DurationPredictor: Module {
   let dim: Int
   let numChannels: Int
   let vocabCharMap: [String: Int]
-  @ModuleInfo var to_pred: Sequential
+  @ModuleInfo var to_pred_linear: Linear
+  @ModuleInfo var to_pred_activation: Softplus
 
   init(
     transformer: DurationTransformer,
@@ -134,9 +135,8 @@ public class DurationPredictor: Module {
     self.dim = transformer.dim
     self.vocabCharMap = vocabCharMap
 
-    self.to_pred = Sequential(layers: [
-      Linear(dim, 1, bias: false), Softplus(),
-    ])
+    self.to_pred_linear = Linear(dim, 1, bias: false)
+    self.to_pred_activation = Softplus()
 
     super.init()
   }
@@ -162,9 +162,35 @@ public class DurationPredictor: Module {
     lens = MLX.maximum(textLens, lens)
 
     var output = transformer(cond: cond, text: inputText)
-    output = to_pred(output).mean().reshaped([batch, -1])
+
+    // Manual forward pass for to_pred
+    output = to_pred_linear(output)
+    output = to_pred_activation(output)
+
+    output = output.mean().reshaped([batch, -1])
     output.eval()
 
     return output
   }
+}
+
+// Helper function (assuming it's needed and correct)
+func listStrToIdx(_ texts: [String], vocabCharMap: [String: Int]) -> MLXArray {
+  // This function needs to return an MLXArray of indices
+  // based on the input strings and vocabulary map.
+  let batchSize = texts.count
+  let maxLen = texts.map { $0.count }.max() ?? 0
+
+  var flatIndices = [Int]()
+  for text in texts {
+    var indices = text.map { vocabCharMap[String($0)] ?? -1 }  // Assuming -1 for unknown/padding
+    // Pad to maxLen
+    indices += Array(repeating: -1, count: maxLen - indices.count)
+    flatIndices.append(contentsOf: indices)
+  }
+
+  // Create MLXArray from flat array and reshape
+  let array = MLXArray(flatIndices)
+  // Reshape to [batchSize, maxLen]
+  return array.reshaped([batchSize, maxLen])
 }
