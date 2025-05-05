@@ -215,7 +215,7 @@ class SinusPositionEmbedding: Module {
 // convolutional position embedding
 
 class ConvPositionEmbedding: Module {
-  let conv1d: Sequential
+  @ModuleInfo var conv1d: Sequential
 
   init(dim: Int, kernelSize: Int = 31, groups: Int = 16) {
     precondition(kernelSize % 2 != 0, "Kernel size must be odd.")
@@ -360,9 +360,9 @@ class ConvNeXtV2Block: Module, UnaryLayer {
 // return with modulated x for attn input, and params for later mlp modulation
 
 class AdaLayerNormZero: Module {
-  let silu: SiLU
-  let linear: Linear
-  let norm: LayerNorm
+  @ModuleInfo var silu: SiLU
+  @ModuleInfo var linear: Linear
+  @ModuleInfo var norm: LayerNorm
 
   init(dim: Int) {
     self.silu = SiLU()
@@ -395,9 +395,9 @@ class AdaLayerNormZero: Module {
 // return only with modulated x for attn input, cuz no more mlp modulation
 
 class AdaLayerNormZero_Final: Module {
-  let silu: SiLU
-  let linear: Linear
-  let norm: LayerNorm
+  @ModuleInfo var silu: SiLU
+  @ModuleInfo var linear: Linear
+  @ModuleInfo var norm: LayerNorm
 
   init(dim: Int) {
     self.silu = SiLU()
@@ -428,7 +428,7 @@ class AdaLayerNormZero_Final: Module {
 // feed forward
 
 class FeedForward: Module {
-  let ff: Sequential
+  @ModuleInfo var ff: Sequential
 
   init(
     dim: Int, dimOut: Int? = nil, mult: Int = 4, dropout: Float = 0.0, approximate: String = "none"
@@ -465,10 +465,10 @@ class Attention: Module {
   let innerDim: Int
   let dropout: Float
 
-  let to_q: Linear
-  let to_k: Linear
-  let to_v: Linear
-  let to_out: Sequential
+  @ModuleInfo var to_q: Linear
+  @ModuleInfo var to_k: Linear
+  @ModuleInfo var to_v: Linear
+  @ModuleInfo var to_out: Sequential
 
   init(dim: Int, heads: Int = 8, dimHead: Int = 64, dropout: Float = 0.0) {
     self.dim = dim
@@ -543,10 +543,10 @@ class Attention: Module {
 // DiT block
 
 class DiTBlock: Module {
-  let attn_norm: AdaLayerNormZero
-  let attn: Attention
-  let ff_norm: LayerNorm
-  let ff: FeedForward
+  @ModuleInfo var attn_norm: AdaLayerNormZero
+  @ModuleInfo var attn: Attention
+  @ModuleInfo var ff_norm: LayerNorm
+  @ModuleInfo var ff: FeedForward
 
   init(dim: Int, heads: Int, dimHead: Int, ffMult: Int = 4, dropout: Float = 0.1) {
     self.attn_norm = AdaLayerNormZero(dim: dim)
@@ -575,8 +575,8 @@ class DiTBlock: Module {
 // time step conditioning embedding
 
 class TimestepEmbedding: Module {
-  let time_embed: SinusPositionEmbedding
-  let time_mlp: Sequential
+  @ModuleInfo var time_embed: SinusPositionEmbedding
+  @ModuleInfo var time_mlp: Sequential
 
   init(dim: Int, freqEmbedDim: Int = 256) {
     self.time_embed = SinusPositionEmbedding(dim: freqEmbedDim)
