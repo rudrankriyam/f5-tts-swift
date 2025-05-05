@@ -372,20 +372,26 @@ extension F5TTS {
         key = key.replacingOccurrences(of: ".conv1d.layers.2.", with: ".conv2.")
 
         // TextEmbedding (text_blocks: Sequential -> [ConvNeXtV2Block])
-        // This replaces .text_blocks.layers.N. with .text_blocks.N.
-        if key.contains(".text_blocks.layers.") {
-          if let range = key.range(of: ".text_blocks.layers.") {
-            let suffix = key[range.upperBound...]
-            if let numberEndIndex = suffix.firstIndex(of: ".") {
-              let numberString = String(suffix[..<numberEndIndex])
-              let restOfKey = suffix[numberEndIndex...]
-              key = "text_blocks.\(numberString)\(restOfKey)"
-            }  // else: handle cases if format is unexpected?
-          }
+        // This replaces .text_blocks.layers.N. with .text_blocks.N. PRESERVING the prefix
+        if let range = key.range(of: ".text_blocks.layers.") {
+          let suffix = key[range.upperBound...]
+          if let numberEndIndex = suffix.firstIndex(of: ".") {
+            let numberString = String(suffix[..<numberEndIndex])
+            let restOfKey = suffix[numberEndIndex...]
+            let prefix = key[..<range.lowerBound]  // Get the part before ".text_blocks..."
+            key = "\(prefix).text_blocks.\(numberString)\(restOfKey)"
+          }  // else: format unexpected
         }
 
         // DurationPredictor (to_pred -> to_pred_linear, to_pred_activation)
-        key = key.replacingOccurrences(of: ".to_pred.layers.0.", with: ".to_pred_linear.")
+        // Handle potential missing leading dot from original file keys
+        if key.hasPrefix("to_pred.layers.0.") {
+          key = key.replacingOccurrences(
+            of: "to_pred.layers.0.", with: "to_pred_linear.", options: .anchored, range: nil)
+        } else {
+          // Original logic in case it does have a leading dot in some files
+          key = key.replacingOccurrences(of: ".to_pred.layers.0.", with: ".to_pred_linear.")
+        }
 
         // --- Original Transpositions (Keep these) ---
         var didTranspose = false  // Debug flag
