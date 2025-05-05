@@ -386,13 +386,28 @@ extension F5TTS {
         key = key.replacingOccurrences(of: ".to_pred.layers.0.", with: ".to_pred_linear.")
 
         // --- Original Transpositions (Keep these) ---
+        var didTranspose = false  // Debug flag
+        let originalShape = value.shape  // Debug: Store original shape
+
         if key.hasSuffix(".dwconv.weight") {
           value = value.transposed(0, 2, 1)
+          didTranspose = true
         } else if key.hasSuffix(".conv1.weight")  // Adjusted for refactored ConvPositionEmbedding
           || key.hasSuffix(".conv2.weight")  // Adjusted for refactored ConvPositionEmbedding
         {
+          // Debug: Print before transposition for relevant keys
+          print("DEBUG: Transposing key: \(key), Original Shape: \(originalShape)")
           value = value.transposed(0, 2, 1)
+          didTranspose = true
+          // Debug: Print after transposition
+          print("DEBUG: Transposed key: \(key), New Shape: \(value.shape)")
         }
+
+        // Debug: Print if transposition happened for other keys unexpectedly (shouldn't happen)
+        // else if didTranspose {
+        //    print("DEBUG: Key \(key) was NOT transposed but flag was true?")
+        // }
+
         // Note: Removed transposition check for .dwconv.bias as it wasn't doing anything.
 
         finalWeights[key] = value
