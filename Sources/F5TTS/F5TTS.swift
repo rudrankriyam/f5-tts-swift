@@ -327,16 +327,11 @@ extension F5TTS {
       modelFilename = "model_v1_\(bits)b.safetensors"
     }
     let modelURL = modelDirectoryURL.appendingPathComponent(modelFilename)
-    let modelWeights = try loadArrays(url: modelURL)
 
-    // mel spec is loaded regardless of quantization
+    // Always load these base components
     guard let filterbankURL = Bundle.module.url(forResource: "mel_filters", withExtension: "npy")
-    else {
-      throw F5TTSError.unableToLoadModel
-    }
+    else { throw F5TTSError.unableToLoadModel }
     let filterbank = try MLX.loadArray(url: filterbankURL)
-
-    // vocab is loaded regardless of quantization
     let vocabURL = modelDirectoryURL.appendingPathComponent("vocab.txt")
     guard let vocabString = try String(data: Data(contentsOf: vocabURL), encoding: .utf8) else {
       throw F5TTSError.unableToLoadModel
@@ -344,7 +339,7 @@ extension F5TTS {
     let vocabEntries = vocabString.split(separator: "\n").map { String($0) }
     let vocab = Dictionary(uniqueKeysWithValues: zip(vocabEntries, vocabEntries.indices))
 
-    // duration model loading remains the same
+    // Attempt to load duration predictor (same logic regardless of main model quantization)
     var durationPredictor: DurationPredictor?
     let durationModelURL = modelDirectoryURL.appendingPathComponent("duration_v2.safetensors")
     do {
@@ -353,10 +348,11 @@ extension F5TTS {
         dim: 512, depth: 8, heads: 8, dimHead: 64, ffMult: 2,
         textNumEmbeds: vocab.count, textDim: 512, convLayers: 2
       )
-      // Note: MelSpec.freeze might be needed here depending on errors, but omitting per user request
+      let predictorMelSpec = MelSpec(filterbank: filterbank)
+      predictorMelSpec.freeze(recursive: false, keys: ["filterbank"])
       let predictor = DurationPredictor(
         transformer: durationTransformer,
-        melSpec: MelSpec(filterbank: filterbank),
+        melSpec: predictorMelSpec,
         vocabCharMap: vocab
       )
       try predictor.update(
@@ -366,7 +362,7 @@ extension F5TTS {
       print("Warning: no duration predictor model found: \(error)")
     }
 
-    // Initialize the main model structure
+    // Initialize the main model structure (always non-quantized initially)
     let dit = DiT(
       dim: 1024, depth: 22, heads: 16, ffMult: 2,
       textNumEmbeds: vocab.count, textDim: 512, convLayers: 4
@@ -378,13 +374,42 @@ extension F5TTS {
       durationPredictor: durationPredictor
     )
 
-    // --- Add Conditional Weight Conversion ---
-    var finalWeights: [String: MLXArray]
-    let requiresWeightConversion = quantizationBits == nil  // Only convert non-quantized model weights
-    if requiresWeightConversion {
+    // Load weights or quantize structure THEN load weights
+    var weightsToLoad: [String: MLXArray]
+
+    if let bits = quantizationBits {
+      // --- Quantize Swift Model Structure FIRST ---
+      print("Quantizing model structure to \(bits)-bit...")
+      let groupSize = 64
+      quantize(
+        model: f5tts,
+        groupSize: groupSize,
+        bits: bits,
+        filter: { path, module in
+          guard let linearLayer = module as? Linear else { return false }
+          return linearLayer.weight.shape[1] % groupSize == 0
+        },
+        apply: { module, groupSize, bits in
+          if let linearLayer = module as? Linear {
+            return QuantizedLinear(linearLayer, groupSize: groupSize, bits: bits)
+          }
+          return nil
+        }
+      )
+      // --- Load Pre-Quantized Weights ---
+      print("Loading pre-quantized weights from \(modelFilename)...")
+      weightsToLoad = try loadArrays(url: modelURL)
+      // No conversion needed as structure now matches quantized file
+
+    } else {
+      // --- Load Non-Quantized Weights ---
+      print("Loading non-quantized weights from \(modelFilename)...")
+      let originalWeights = try loadArrays(url: modelURL)
+
+      // --- Apply Weight Conversion ---
       print("Converting weights...")
-      finalWeights = [:]
-      for (k, v) in modelWeights {
+      var finalWeights: [String: MLXArray] = [:]
+      for (k, v) in originalWeights {
         var key = k.replacingOccurrences(of: "ema_model.", with: "")
         var value = v
         // Apply renames and transpositions
@@ -404,51 +429,25 @@ extension F5TTS {
           key = key.replacingOccurrences(of: ".conv1d", with: ".conv1d.layers")
         }
 
-        // Handle Specific Layer Weights & Transpositions
         if key.hasSuffix(".dwconv.weight") {
           value = value.transposed(0, 2, 1)
         } else if key.hasSuffix(".dwconv.bias") {
-        }
-        // Transpose standard Conv1D weights
-        else if key.hasSuffix(".conv1d.layers.0.weight") || key.hasSuffix(".conv1d.layers.2.weight")
+          // No transpose needed
+        } else if key.hasSuffix(".conv1d.layers.0.weight")
+          || key.hasSuffix(".conv1d.layers.2.weight")
         {
           value = value.transposed(0, 2, 1)
         }
         finalWeights[key] = value
       }
-    } else {
-      print("Using pre-quantized weights (no conversion).")
-      finalWeights = modelWeights
+      weightsToLoad = finalWeights
+      // No quantization call needed here
     }
-    // --- End Conditional Weight Conversion ---
 
-    // Load weights into the model
-    try f5tts.update(parameters: ModuleParameters.unflattened(finalWeights), verify: [.all])
+    // Load the appropriately prepared weights
+    try f5tts.update(parameters: ModuleParameters.unflattened(weightsToLoad), verify: [.all])
 
-    // --- Add Conditional Quantization Call ---
-    if let bits = quantizationBits {
-      print("Applying \(bits)-bit quantization...")
-      let groupSize = 64
-      quantize(
-        model: f5tts,
-        groupSize: groupSize,
-        bits: bits,
-        filter: { path, module in
-          guard let linearLayer = module as? Linear else { return false }
-          let inputDimensions = linearLayer.weight.shape[1]
-          return inputDimensions % groupSize == 0
-        },
-        apply: { module, groupSize, bits in
-          if let linearLayer = module as? Linear {
-            return QuantizedLinear(linearLayer, groupSize: groupSize, bits: bits)
-          }
-          return nil
-        }
-      )
-    }
-    // --- End Conditional Quantization Call ---
-
-    // Evaluate parameters after loading/quantization
+    // Evaluate parameters after loading
     eval(f5tts.parameters())
 
     return f5tts
