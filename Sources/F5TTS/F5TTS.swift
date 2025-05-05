@@ -314,7 +314,8 @@ extension F5TTS {
     ) { progress in
       downloadProgress?(progress)
     }
-    return try self.fromPretrained(modelDirectoryURL: modelDirectoryURL)
+    return try self.fromPretrained(
+      modelDirectoryURL: modelDirectoryURL, quantizationBits: quantizationBits)
   }
 
   public static func fromPretrained(modelDirectoryURL: URL, quantizationBits: Int? = nil) throws
