@@ -1,5 +1,7 @@
 
 # F5 TTS for Swift
+[![Star History Chart](https://api.star-history.com/svg?repos=rudrankriyam/f5-tts-swift&type=Date)](https://star-history.com/#rudrankriyam/f5-tts-swift&Date)
+
 
 Implementation of [F5-TTS](https://arxiv.org/abs/2410.06885) in Swift, using the [MLX Swift](https://github.com/ml-explore/mlx-swift) framework.
 
