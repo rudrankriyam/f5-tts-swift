@@ -1,6 +1,5 @@
 
 # F5 TTS for Swift
-[![Star History Chart](https://api.star-history.com/svg?repos=rudrankriyam/f5-tts-swift&type=Date)](https://star-history.com/#rudrankriyam/f5-tts-swift&Date)
 
 
 Implementation of [F5-TTS](https://arxiv.org/abs/2410.06885) in Swift, using the [MLX Swift](https://github.com/ml-explore/mlx-swift) framework.
@@ -77,3 +76,5 @@ ffmpeg -i /path/to/audio.wav -ac 1 -ar 24000 -sample_fmt s16 -t 10 /path/to/outp
 
 The code in this repository is released under the MIT license as found in the
 [LICENSE](LICENSE) file.
+
+[![Star History Chart](https://api.star-history.com/svg?repos=rudrankriyam/f5-tts-swift&type=Date)](https://star-history.com/#rudrankriyam/f5-tts-swift&Date)
